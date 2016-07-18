@@ -1,0 +1,7 @@
+
+# generated files
+*.pyc
+*~
+
+# ide
+.idea
