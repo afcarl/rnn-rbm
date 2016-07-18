@@ -7,6 +7,7 @@ from theano.tensor.shared_randomstreams import RandomStreams
 
 dtype = theano.config.floatX
 sigm = lambda x: T.nnet.sigmoid(x)
+relu = lambda x: T.nnet.relu(x)
 np.random.seed(0xaced)
 rng = RandomStreams(seed=np.random.randint(1 << 30))
 

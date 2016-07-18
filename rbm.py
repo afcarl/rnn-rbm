@@ -11,7 +11,7 @@ import os
 import time
 
 from scipy.io.wavfile import write as wavwrite
-from utils import sigm, dtype, rng, shared_normal, shared_zeros
+from utils import sigm, dtype, rng, shared_normal, shared_zeros, relu
 
 
 def build_rbm(v, W, bv, bh, k):
@@ -74,9 +74,9 @@ def build_rnnrbm(n_visible, n_hidden, n_hidden_recurrent):
             v_t, _, _, updates = build_rbm(T.zeros((n_visible,)), W, bv_t, bh_t, k=25)
 
         # gru equations
-        update_gate = sigm(T.dot(v_t, w_in_update) + T.dot(u_tm1, w_hidden_update) + b_update)
-        reset_gate = sigm(T.dot(v_t, w_in_reset) + T.dot(u_tm1, w_hidden_reset) + b_reset)
-        u_t_temp = sigm(T.dot(v_t, w_in_hidden) + T.dot(u_tm1 * reset_gate, w_reset_hidden) + b_hidden)
+        update_gate = relu(T.dot(v_t, w_in_update) + T.dot(u_tm1, w_hidden_update) + b_update)
+        reset_gate = relu(T.dot(v_t, w_in_reset) + T.dot(u_tm1, w_hidden_reset) + b_reset)
+        u_t_temp = T.tanh(T.dot(v_t, w_in_hidden) + T.dot(u_tm1 * reset_gate, w_reset_hidden) + b_hidden)
         u_t = (1 - update_gate) * u_t_temp + update_gate * u_tm1
 
         return ([v_t, u_t], updates) if generate else [u_t, bv_t, bh_t]
