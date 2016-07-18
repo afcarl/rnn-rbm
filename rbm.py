@@ -39,16 +39,29 @@ def build_rnnrbm(n_visible, n_hidden, n_hidden_recurrent):
     bv = shared_zeros('bv', n_visible)
     bh = shared_zeros('bh', n_hidden)
 
-    # rnn params
+    # rnn -> rbm connections
     Wuh = shared_normal('Wuh', n_hidden_recurrent, n_hidden, scale=0.0001)
     Wuv = shared_normal('Wuv', n_hidden_recurrent, n_visible, scale=0.0001)
-    Wvu = shared_normal('Wvu', n_visible, n_hidden_recurrent, scale=0.0001)
-    Wuu = shared_normal('Wuu', n_hidden_recurrent, n_hidden_recurrent, scale=0.0001)
-    bu = shared_zeros('bu', n_hidden_recurrent)
 
-    params = [W, bv, bh, Wuh, Wuv, Wvu, Wuu, bu]
-    # params = [W, bv, bh] # rbm params
-    # params = [Wuh, Wuv, Wvu, Wuu, bu] # rnn params
+    params = [W, bv, bh, Wuh, Wuv]
+
+    # update gate
+    w_in_update = shared_normal('w_in_update', n_visible, n_hidden_recurrent, scale=0.0001)
+    w_hidden_update = shared_normal('w_hidden_update', n_hidden_recurrent, n_hidden_recurrent, scale=0.0001)
+    b_update = shared_zeros('b_update', n_hidden_recurrent)
+    params += [w_in_update, w_hidden_update, b_update]
+
+    # reset gate
+    w_in_reset = shared_normal('w_in_reset', n_visible, n_hidden_recurrent, scale=0.0001)
+    w_hidden_reset = shared_normal('w_hidden_reset', n_hidden_recurrent, n_hidden_recurrent, scale=0.0001)
+    b_reset = shared_zeros('b_reset', n_hidden_recurrent)
+    params += [w_in_reset, w_hidden_reset, b_reset]
+
+    # hidden layer
+    w_in_hidden = shared_normal('w_in_hidden', n_visible, n_hidden_recurrent, scale=0.0001)
+    w_reset_hidden = shared_normal('w_reset_hidden', n_hidden_recurrent, n_hidden_recurrent, scale=0.0001)
+    b_hidden = shared_zeros('b_hidden', n_hidden_recurrent)
+    params += [w_in_hidden, w_reset_hidden, b_hidden]
 
     v = T.matrix()
     u0 = T.zeros((n_hidden_recurrent,)) # rnn initial value
@@ -59,7 +72,13 @@ def build_rnnrbm(n_visible, n_hidden, n_hidden_recurrent):
         generate = v_t is None
         if generate:
             v_t, _, _, updates = build_rbm(T.zeros((n_visible,)), W, bv_t, bh_t, k=25)
-        u_t = T.tanh(bu + T.dot(v_t, Wvu) + T.dot(u_tm1, Wuu))
+
+        # gru equations
+        update_gate = sigm(T.dot(v_t, w_in_update) + T.dot(u_tm1, w_hidden_update) + b_update)
+        reset_gate = sigm(T.dot(v_t, w_in_reset) + T.dot(u_tm1, w_hidden_reset) + b_reset)
+        u_t_temp = sigm(T.dot(v_t, w_in_hidden) + T.dot(u_tm1 * reset_gate, w_reset_hidden) + b_hidden)
+        u_t = (1 - update_gate) * u_t_temp + update_gate * u_tm1
+
         return ([v_t, u_t], updates) if generate else [u_t, bv_t, bh_t]
 
     (u_t, bv_t, bh_t), updates_train = theano.scan(lambda v_t, u_tm1, *_: recurrence(v_t, u_tm1), sequences=v,
@@ -144,7 +163,7 @@ def train():
     rnnrbm = RnnRbm(n_visible=info['FREQ_DIM'], n_hidden=n_hidden, n_hidden_recurrent=n_hidden_recurrent, lr=lr)
     iterator = DirectoryIterator(spec_dir)
 
-    num_epochs = 200
+    num_epochs = 20
     batch_size = 20
     for epoch in range(num_epochs):
         start = time.time()
@@ -152,12 +171,12 @@ def train():
         for i in range(0, info['NUM_FILES'], batch_size):
             cost = rnnrbm.train_function(iterator.get_next(batch_size))
             costs.append(cost)
-            print('\rEpoch %d (%d / %d) Cost: %s' % (epoch, i, info['NUM_FILES'], str(cost)), end='')
+            print('\rEpoch %d (%d / %d) Cost: %.3f' % (epoch, i, info['NUM_FILES'], cost), end='')
         end = time.time()
-        print('\rEpoch %d Time: %dm %ds Cost: %s' % (epoch,
+        print('\rEpoch %d Time: %dm %ds Cost: %.3f' % (epoch,
                                                      int(end - start) / 60,
                                                      int(end - start) % 60,
-                                                     str(np.mean(costs))))
+                                                     np.mean(costs)))
     rnnrbm.save(save_dir)
 
 
