@@ -29,29 +29,38 @@ def build_rnnrbm(n_visible, n_hidden, n_hidden_recurrent, lr, l2_norm=0.0001, l1
     Wuv = shared_normal('Wuv', n_hidden_recurrent, n_visible, scale=0.0001)
 
     params = [W, bv, bh, Wuh, Wuv]
-    rnn_params = list()
+
+    def get_rnn_params(number, n_visible, n_hidden_recurrent):
+        w_in_update = shared_normal('w_in_update', n_visible, n_hidden_recurrent, scale=0.0001)
+        w_hidden_update = shared_normal('w_hidden_update', n_hidden_recurrent, n_hidden_recurrent, scale=0.0001)
+        b_update = shared_zeros('b_update', n_hidden_recurrent)
+        w_in_reset = shared_normal('w_in_reset', n_visible, n_hidden_recurrent, scale=0.0001)
+        w_hidden_reset = shared_normal('w_hidden_reset', n_hidden_recurrent, n_hidden_recurrent, scale=0.0001)
+        b_reset = shared_zeros('b_reset', n_hidden_recurrent)
+        w_in_hidden = shared_normal('w_in_hidden', n_visible, n_hidden_recurrent, scale=0.0001)
+        w_reset_hidden = shared_normal('w_reset_hidden', n_hidden_recurrent, n_hidden_recurrent, scale=0.0001)
+        b_hidden = shared_zeros('b_hidden', n_hidden_recurrent)
+        return [w_in_update, w_hidden_update, b_update,
+                w_in_reset, w_hidden_reset, b_reset,
+                w_in_hidden, w_reset_hidden, b_hidden]
+
+    def build_rnn(params, v_t, u_tm1):
+        w_in_update, w_hidden_update, b_update, \
+        w_in_reset, w_hidden_reset, b_reset, \
+        w_in_hidden, w_reset_hidden, b_hidden = params
+
+        update_gate = T.tanh(T.dot(v_t, w_in_update) + T.dot(u_tm1, w_hidden_update) + b_update)
+        reset_gate = T.tanh(T.dot(v_t, w_in_reset) + T.dot(u_tm1, w_hidden_reset) + b_reset)
+        u_t_temp = T.tanh(T.dot(v_t, w_in_hidden) + T.dot(u_tm1 * reset_gate, w_reset_hidden) + b_hidden)
+        u_t = (1 - update_gate) * u_t_temp + update_gate * u_tm1
+
+        return u_t
 
     # update gate
-    w_in_update = shared_normal('w_in_update', n_visible, n_hidden_recurrent, scale=0.0001)
-    w_hidden_update = shared_normal('w_hidden_update', n_hidden_recurrent, n_hidden_recurrent, scale=0.0001)
-    b_update = shared_zeros('b_update', n_hidden_recurrent)
-    rnn_params += [w_in_update, w_hidden_update, b_update]
-
-    # reset gate
-    w_in_reset = shared_normal('w_in_reset', n_visible, n_hidden_recurrent, scale=0.0001)
-    w_hidden_reset = shared_normal('w_hidden_reset', n_hidden_recurrent, n_hidden_recurrent, scale=0.0001)
-    b_reset = shared_zeros('b_reset', n_hidden_recurrent)
-    rnn_params += [w_in_reset, w_hidden_reset, b_reset]
-
-    # hidden layer
-    w_in_hidden = shared_normal('w_in_hidden', n_visible, n_hidden_recurrent, scale=0.0001)
-    w_reset_hidden = shared_normal('w_reset_hidden', n_hidden_recurrent, n_hidden_recurrent, scale=0.0001)
-    b_hidden = shared_zeros('b_hidden', n_hidden_recurrent)
-    rnn_params += [w_in_hidden, w_reset_hidden, b_hidden]
-    params += rnn_params
-
-    v = T.matrix()
-    u0 = T.zeros((n_hidden_recurrent,))  # rnn initial value
+    rnn_params_1 = get_rnn_params(1, n_visible, n_hidden_recurrent)
+    rnn_params_2 = get_rnn_params(2, n_hidden_recurrent, n_hidden_recurrent)
+    rnn_params_3 = get_rnn_params(3, n_hidden_recurrent, n_hidden_recurrent)
+    params += rnn_params_1 + rnn_params_2 + rnn_params_3
 
     def build_rbm(v, W, bv, bh, k):
         def gibbs_step(v, binomial=False):
@@ -73,34 +82,38 @@ def build_rnnrbm(n_visible, n_hidden, n_hidden_recurrent, lr, l2_norm=0.0001, l1
         cost = (free_energy(v) - free_energy(v_sample)) / v.shape[0]
         return v_sample, cost, monitor, updates
 
-    def build_rnn(v_t, u_tm1):
-        update_gate = T.tanh(T.dot(v_t, w_in_update) + T.dot(u_tm1, w_hidden_update) + b_update)
-        reset_gate = T.tanh(T.dot(v_t, w_in_reset) + T.dot(u_tm1, w_hidden_reset) + b_reset)
-        u_t_temp = T.tanh(T.dot(v_t, w_in_hidden) + T.dot(u_tm1 * reset_gate, w_reset_hidden) + b_hidden)
-        u_t = (1 - update_gate) * u_t_temp + update_gate * u_tm1
-        return u_t
-
-    def recurrence(v_t, u_tm1):
-        bv_t = bv + T.dot(u_tm1, Wuv)
-        bh_t = bh + T.dot(u_tm1, Wuh)
+    def recurrence(v_t, u1_tm1, u2_tm1, u3_tm1):
+        bv_t = bv + T.dot(u3_tm1, Wuv)
+        bh_t = bh + T.dot(u3_tm1, Wuh)
         generate = v_t is None
 
         # generate a probability distribution for the visible units, with certain biases
         if generate:
             v_t, _, _, updates = build_rbm(T.zeros((n_visible,)), W, bv_t, bh_t, k=15)
-        u_t = build_rnn(v_t, u_tm1)
-        return ([v_t, u_t], updates) if generate else [u_t, bv_t, bh_t]
 
-    (u_t, bv_t, bh_t), updates_train = theano.scan(lambda v_t, u_tm1, *_: recurrence(v_t, u_tm1), sequences=v,
-                                                   outputs_info=[u0, None, None], non_sequences=params)
+        u1_t = build_rnn(rnn_params_1, v_t, u1_tm1)
+        u2_t = build_rnn(rnn_params_2, u1_t, u2_tm1)
+        u3_t = build_rnn(rnn_params_3, u2_t, u3_tm1)
+
+        return ([v_t, u1_t, u2_t, u3_t], updates) if generate else [u1_t, u2_t, u3_t, bv_t, bh_t]
+
+    v = T.matrix()
+    u1_0 = T.zeros((n_hidden_recurrent,))  # rnn initial value
+    u2_0 = T.zeros((n_hidden_recurrent,))
+    u3_0 = T.zeros((n_hidden_recurrent,))
+
+    (u_t, bv_t, bh_t), updates_train = theano.scan(
+        lambda v_t, u1_tm1, u2_tm1, u3_tm1, *_: recurrence(v_t, u1_tm1, u2_tm1, u3_tm1), sequences=v,
+        outputs_info=[u1_0, u2_0, u3_0, None, None], non_sequences=params)
 
     v_sample, cost, monitor, updates_rbm = build_rbm(v, W, bv_t, bh_t, k=20)
     updates_train.update(updates_rbm)
 
-    (v_t, u_t), updates_generate = theano.scan(lambda u_tm1, *_: recurrence(None, u_tm1), outputs_info=[None, u0],
-                                               non_sequences=params, n_steps=20)
+    (v_t, u_t), updates_generate = theano.scan(
+        lambda u1_tm1, u2_tm1, u3_tm1, *_: recurrence(None, u1_tm1, u2_tm1, u3_tm1),
+        outputs_info=[None, u1_0, u2_0, u3_0], non_sequences=params, n_steps=20)
 
-    for param in rnn_params:
+    for param in rnn_params_1 + rnn_params_2 + rnn_params_3:
         cost += T.sum(param ** 2) * l2_norm * lr
         cost += T.sum(abs(param)) * l1_norm * lr
 
@@ -110,7 +123,8 @@ def build_rnnrbm(n_visible, n_hidden, n_hidden_recurrent, lr, l2_norm=0.0001, l1
 class RnnRbm:
     def __init__(self, n_visible, n_hidden=150, n_hidden_recurrent=100, lr=0.001, l2_norm=0.0001, l1_norm=0.0001):
         (v, v_sample, cost, monitor, params,
-         updates_train, v_t, updates_generate) = build_rnnrbm(n_visible, n_hidden, n_hidden_recurrent, lr, l2_norm=l2_norm, l1_norm=l1_norm)
+         updates_train, v_t, updates_generate) = build_rnnrbm(n_visible, n_hidden, n_hidden_recurrent, lr,
+                                                              l2_norm=l2_norm, l1_norm=l1_norm)
         for param in params:
             gradient = T.grad(cost, param, consider_constant=[v_sample])
 
