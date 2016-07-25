@@ -31,15 +31,18 @@ def build_rnnrbm(n_visible, n_hidden, n_hidden_recurrent, lr, l2_norm=0.0001, l1
     params = [W, bv, bh, Wuh, Wuv]
 
     def get_rnn_params(number, n_visible, n_hidden_recurrent):
-        w_in_update = shared_normal('w_in_update', n_visible, n_hidden_recurrent, scale=0.0001)
-        w_hidden_update = shared_normal('w_hidden_update', n_hidden_recurrent, n_hidden_recurrent, scale=0.0001)
-        b_update = shared_zeros('b_update', n_hidden_recurrent)
-        w_in_reset = shared_normal('w_in_reset', n_visible, n_hidden_recurrent, scale=0.0001)
-        w_hidden_reset = shared_normal('w_hidden_reset', n_hidden_recurrent, n_hidden_recurrent, scale=0.0001)
-        b_reset = shared_zeros('b_reset', n_hidden_recurrent)
-        w_in_hidden = shared_normal('w_in_hidden', n_visible, n_hidden_recurrent, scale=0.0001)
-        w_reset_hidden = shared_normal('w_reset_hidden', n_hidden_recurrent, n_hidden_recurrent, scale=0.0001)
-        b_hidden = shared_zeros('b_hidden', n_hidden_recurrent)
+        w_in_update = shared_normal('w_in_update_%d' % number, n_visible, n_hidden_recurrent, scale=0.0001)
+        w_hidden_update = shared_normal('w_hidden_update_%d' % number, n_hidden_recurrent, n_hidden_recurrent,
+                                        scale=0.0001)
+        b_update = shared_zeros('b_update_%d' % number, n_hidden_recurrent)
+        w_in_reset = shared_normal('w_in_reset_%d' % number, n_visible, n_hidden_recurrent, scale=0.0001)
+        w_hidden_reset = shared_normal('w_hidden_reset_%d' % number, n_hidden_recurrent, n_hidden_recurrent,
+                                       scale=0.0001)
+        b_reset = shared_zeros('b_reset_%d' % number, n_hidden_recurrent)
+        w_in_hidden = shared_normal('w_in_hidden_%d' % number, n_visible, n_hidden_recurrent, scale=0.0001)
+        w_reset_hidden = shared_normal('w_reset_hidden_%d' % number, n_hidden_recurrent, n_hidden_recurrent,
+                                       scale=0.0001)
+        b_hidden = shared_zeros('b_hidden_%d' % number, n_hidden_recurrent)
         return [w_in_update, w_hidden_update, b_update,
                 w_in_reset, w_hidden_reset, b_reset,
                 w_in_hidden, w_reset_hidden, b_hidden]
@@ -98,21 +101,24 @@ def build_rnnrbm(n_visible, n_hidden, n_hidden_recurrent, lr, l2_norm=0.0001, l1
         return ([v_t, u1_t, u2_t, u3_t], updates) if generate else [u1_t, u2_t, u3_t, bv_t, bh_t]
 
     v = T.matrix()
-    u1_0 = T.zeros((n_hidden_recurrent,))  # rnn initial value
+
+    # rnn initial values
+    u1_0 = T.zeros((n_hidden_recurrent,))
     u2_0 = T.zeros((n_hidden_recurrent,))
     u3_0 = T.zeros((n_hidden_recurrent,))
 
-    (u_t, bv_t, bh_t), updates_train = theano.scan(
+    (_, _, _, bv_t, bh_t), updates_train = theano.scan(
         lambda v_t, u1_tm1, u2_tm1, u3_tm1, *_: recurrence(v_t, u1_tm1, u2_tm1, u3_tm1), sequences=v,
-        outputs_info=[u1_0, u2_0, u3_0, None, None], non_sequences=params)
+        outputs_info=[u1_0, u2_0, u3_0, None, None])
 
     v_sample, cost, monitor, updates_rbm = build_rbm(v, W, bv_t, bh_t, k=20)
     updates_train.update(updates_rbm)
 
-    (v_t, u_t), updates_generate = theano.scan(
+    (v_t, _, _, _), updates_generate = theano.scan(
         lambda u1_tm1, u2_tm1, u3_tm1, *_: recurrence(None, u1_tm1, u2_tm1, u3_tm1),
-        outputs_info=[None, u1_0, u2_0, u3_0], non_sequences=params, n_steps=20)
+        outputs_info=[None, u1_0, u2_0, u3_0], n_steps=20)
 
+    # l1 and l2 regularizers
     for param in rnn_params_1 + rnn_params_2 + rnn_params_3:
         cost += T.sum(param ** 2) * l2_norm * lr
         cost += T.sum(abs(param)) * l1_norm * lr
