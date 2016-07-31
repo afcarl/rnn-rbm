@@ -13,12 +13,12 @@ import random
 from utils import sigm, dtype, rng, shared_normal, shared_zeros
 
 hidden_scalar = 1.7
-hidden_recurrent_scalar = 2.2
+hidden_recurrent_scalar = 1.3
 
 theano.config.exception_verbosity = 'high'
 
 
-def build_rnnrbm(n_visible, n_hidden, n_hidden_recurrent, lr, l2_norm=0.0001, l1_norm=0.0001):
+def build_rnnrbm(n_visible, n_hidden, n_hidden_recurrent, lr, l2_norm=None, l1_norm=None):
     # rbm params
     W = shared_normal('W', n_visible, n_hidden, scale=0.01)
     bv = shared_zeros('bv', n_visible)
@@ -85,9 +85,9 @@ def build_rnnrbm(n_visible, n_hidden, n_hidden_recurrent, lr, l2_norm=0.0001, l1
         cost = (free_energy(v) - free_energy(v_sample)) / v.shape[0]
         return v_sample, cost, monitor, updates
 
-    def recurrence(v_t, u1_tm1, u2_tm1, u3_tm1):
-        bv_t = bv + T.dot(u3_tm1, Wuv)
-        bh_t = bh + T.dot(u3_tm1, Wuh)
+    def recurrence(v_t, u1_tm1, u2_tm1):
+        bv_t = bv + T.dot(u2_tm1, Wuv)
+        bh_t = bh + T.dot(u2_tm1, Wuh)
         generate = v_t is None
 
         # generate a probability distribution for the visible units, with certain biases
@@ -96,41 +96,44 @@ def build_rnnrbm(n_visible, n_hidden, n_hidden_recurrent, lr, l2_norm=0.0001, l1
 
         u1_t = build_rnn(rnn_params_1, v_t, u1_tm1)
         u2_t = build_rnn(rnn_params_2, u1_t, u2_tm1)
-        u3_t = build_rnn(rnn_params_3, u2_t, u3_tm1)
 
-        return ([v_t, u1_t, u2_t, u3_t], updates) if generate else [u1_t, u2_t, u3_t, bv_t, bh_t]
+        return ([v_t, u1_t, u2_t], updates) if generate else [u1_t, u2_t, bv_t, bh_t]
 
     v = T.matrix()
 
     # rnn initial values
     u1_0 = T.zeros((n_hidden_recurrent,))
     u2_0 = T.zeros((n_hidden_recurrent,))
-    u3_0 = T.zeros((n_hidden_recurrent,))
 
-    (_, _, _, bv_t, bh_t), updates_train = theano.scan(
-        lambda v_t, u1_tm1, u2_tm1, u3_tm1, *_: recurrence(v_t, u1_tm1, u2_tm1, u3_tm1), sequences=v,
-        outputs_info=[u1_0, u2_0, u3_0, None, None])
+    (_, _, bv_t, bh_t), updates_train = theano.scan(
+        lambda v_t, u1_tm1, u2_tm1, *_: recurrence(v_t, u1_tm1, u2_tm1), sequences=v,
+        outputs_info=[u1_0, u2_0, None, None])
 
     v_sample, cost, monitor, updates_rbm = build_rbm(v, W, bv_t, bh_t, k=20)
     updates_train.update(updates_rbm)
 
-    (v_t, _, _, _), updates_generate = theano.scan(
-        lambda u1_tm1, u2_tm1, u3_tm1, *_: recurrence(None, u1_tm1, u2_tm1, u3_tm1),
-        outputs_info=[None, u1_0, u2_0, u3_0], n_steps=20)
+    n_steps = T.scalar(dtype='int32')
+
+    (v_t, _, _), updates_generate = theano.scan(
+        lambda u1_tm1, u2_tm1, *_: recurrence(None, u1_tm1, u2_tm1),
+        outputs_info=[None, u1_0, u2_0], n_steps=n_steps)
 
     # l1 and l2 regularizers
     for param in rnn_params_1 + rnn_params_2 + rnn_params_3:
-        cost += T.sum(param ** 2) * l2_norm * lr
-        cost += T.sum(abs(param)) * l1_norm * lr
+        if l2_norm is not None:
+            cost += T.sum(param ** 2) * l2_norm * lr
+        if l1_norm is not None:
+            cost += T.sum(abs(param)) * l1_norm * lr
 
-    return (v, v_sample, cost, monitor, params, updates_train, v_t, updates_generate)
+    return (v, v_sample, cost, monitor, params, updates_train, v_t, updates_generate, n_steps)
 
 
 class RnnRbm:
-    def __init__(self, n_visible, n_hidden=150, n_hidden_recurrent=100, lr=0.001, l2_norm=0.0001, l1_norm=0.0001):
-        (v, v_sample, cost, monitor, params,
-         updates_train, v_t, updates_generate) = build_rnnrbm(n_visible, n_hidden, n_hidden_recurrent, lr,
-                                                              l2_norm=l2_norm, l1_norm=l1_norm)
+    def __init__(self, n_visible, n_hidden=150, n_hidden_recurrent=100, lr=0.001, l2_norm=None, l1_norm=None):
+        (v, v_sample, cost, monitor, params, updates_train,
+         v_t, updates_generate, n_steps) = build_rnnrbm(n_visible, n_hidden, n_hidden_recurrent, lr, l2_norm=l2_norm,
+                                                        l1_norm=l1_norm)
+
         for param in params:
             gradient = T.grad(cost, param, consider_constant=[v_sample])
 
@@ -154,7 +157,7 @@ class RnnRbm:
             updates_train[param] = param - (lr * gradient / T.sqrt(accu_new + 1e-6))
         self.params = params
         self.train_function = theano.function([v], monitor, updates=updates_train)
-        self.generate_function = theano.function([], v_t, updates=updates_generate)
+        self.generate_function = theano.function([n_steps], v_t, updates=updates_generate)
 
     def save(self, dir_path):
         for param in self.params:
@@ -208,12 +211,14 @@ def train():
     n_hidden = int(info['FREQ_DIM'] * hidden_scalar)
     n_hidden_recurrent = int(info['FREQ_DIM'] * hidden_recurrent_scalar)
     for lr in [3e-4, 1e-4, 5e-5, 3e-5, 1e-5]:
-        rnnrbm = RnnRbm(n_visible=info['FREQ_DIM'], n_hidden=n_hidden, n_hidden_recurrent=n_hidden_recurrent, lr=lr)
+        rnnrbm = RnnRbm(n_visible=info['FREQ_DIM'], n_hidden=n_hidden, n_hidden_recurrent=n_hidden_recurrent, lr=lr,
+                        l1_norm=1e-4)
         iterator = DirectoryIterator(spec_dir)
 
-        num_epochs = 50
+        num_epochs = 30
         batch_size = 20
         rnnrbm.load(save_dir)
+        x = 0
         for epoch in range(num_epochs):
             start = time.time()
             costs = list()
@@ -226,13 +231,13 @@ def train():
                                                            int(end - start) / 60,
                                                            int(end - start) % 60,
                                                            np.mean(costs)))
-            if (epoch + 1) % 10 == 0:
-                figure_dir = os.path.join(os.environ['VOCALIZATION_FILES'], 'figures')
-                if not os.path.exists(figure_dir):
-                    os.makedirs(figure_dir)
-                figure = rnnrbm.generate_function()
-                np.save(os.path.join(figure_dir, 'sample_at_epoch_%d_lr_%f.npy' % (epoch + 1, lr)), figure)
-                rnnrbm.save(save_dir)
+            figure_dir = os.path.join(os.environ['VOCALIZATION_FILES'], 'figures')
+            if not os.path.exists(figure_dir):
+                os.makedirs(figure_dir)
+            figure = rnnrbm.generate_function(200)
+            np.save(os.path.join(figure_dir, 'sample_%d.npy' % x), figure)
+            x += 1
+            rnnrbm.save(save_dir)
 
 
 def test():
@@ -260,7 +265,7 @@ def test():
 
     n_samples = 5
     for sample in range(n_samples):
-        figure = rnnrbm.generate_function()
+        figure = rnnrbm.generate_function(1000)
         np.save('sample_%d.npy' % sample, figure)
         pylab.figure()
         pylab.imshow(figure.T, origin='lower', aspect='auto', interpolation='nearest')
